@@ -24,14 +24,17 @@ import (
 )
 
 type GjsonParser struct {
+	tsLayout []string
 }
 
-func (c *GjsonParser) Parse(bs []byte) model.Metric {
-	return &GjsonMetric{string(bs)}
+func (p *GjsonParser) Parse(bs []byte) (metric model.Metric, err error) {
+	metric = &GjsonMetric{string(bs), p.tsLayout}
+	return
 }
 
 type GjsonMetric struct {
-	raw string
+	raw      string
+	tsLayout []string
 }
 
 func (c *GjsonMetric) Get(key string) interface{} {
@@ -78,6 +81,32 @@ func (c *GjsonMetric) GetFloat(key string) float64 {
 
 func (c *GjsonMetric) GetInt(key string) int64 {
 	return gjson.Get(c.raw, key).Int()
+}
+
+func (c *GjsonMetric) GetDate(key string) (t time.Time) {
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[0], val)
+	return
+}
+
+func (c *GjsonMetric) GetDateTime(key string) (t time.Time) {
+	if v := c.GetFloat(key); v != 0 {
+		return time.Unix(int64(v), int64(v*1e9)%1e9)
+	}
+
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[1], val)
+	return
+}
+
+func (c *GjsonMetric) GetDateTime64(key string) (t time.Time) {
+	if v := c.GetFloat(key); v != 0 {
+		return time.Unix(int64(v), int64(v*1e9)%1e9)
+	}
+
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[2], val)
+	return
 }
 
 func (c *GjsonMetric) GetElasticDateTime(key string) int64 {

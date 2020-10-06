@@ -16,33 +16,38 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
+	"os"
 	"strconv"
 
+	_ "github.com/ClickHouse/clickhouse-go"
+	"github.com/google/gops/agent"
 	"github.com/google/uuid"
 	"github.com/hashicorp/consul/api"
-	"github.com/housepower/clickhouse_sinker/creator"
+	"github.com/housepower/clickhouse_sinker/config"
 	"github.com/housepower/clickhouse_sinker/health"
-	"github.com/housepower/clickhouse_sinker/prom"
+	"github.com/housepower/clickhouse_sinker/input"
+	"github.com/housepower/clickhouse_sinker/output"
+	"github.com/housepower/clickhouse_sinker/parser"
 	"github.com/housepower/clickhouse_sinker/statistics"
 	"github.com/housepower/clickhouse_sinker/task"
-	_ "github.com/kshvakov/clickhouse"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sundy-li/go_commons/app"
 	"github.com/sundy-li/go_commons/log"
 )
 
 var (
-	config     = flag.String("conf", "", "config dir")
+	v          = flag.Bool("v", false, "show build version")
+	cfgDir     = flag.String("conf", "", "config dir")
 	httpAddr   = flag.String("http-addr", "0.0.0.0:2112", "http interface")
 	consulAddr = flag.String("consul-addr", "http://127.0.0.1:8500", "consul api interface address")
 
 	httpMetrcs = promhttp.Handler()
-	cfg        creator.Config
 	runner     *Sinker
 	ip         string
 	port       int
@@ -87,23 +92,37 @@ func serviceRegister(agent *api.Agent) {
 		log.Warnf("Consul: %s", err)
 	}
 }
+
 func init() {
 	flag.Parse()
+	if *v {
+		config.PrintSinkerInfo()
+		os.Exit(0)
+	}
 	ip, port = parseAddr(*httpAddr)
 }
 
+// GenTasks generate the tasks via config
+func GenTasks(cfg *config.Config) (res []*task.Service) {
+	res = make([]*task.Service, 0, len(cfg.Tasks))
+	for _, taskCfg := range cfg.Tasks {
+		ck := output.NewClickHouse(taskCfg)
+		p := parser.NewParser(taskCfg.Parser, taskCfg.CsvFormat, taskCfg.Delimiter, []string{taskCfg.LayoutDate, taskCfg.LayoutDateTime, taskCfg.LayoutDateTime64})
+		kafka := input.NewKafka(taskCfg, p)
+		taskImpl := task.NewTaskService(kafka, ck, taskCfg)
+		res = append(res, taskImpl)
+	}
+	return
+}
+
 func main() {
+	if err := agent.Listen(agent.Options{}); err != nil {
+		log.Critical(err)
+	}
 	consulConfig := api.DefaultConfig()
 	consulConfig.Address = *consulAddr
 	consulClient, _ := api.NewClient(consulConfig)
 	consulAgent := consulClient.Agent()
-
-	prometheus.MustRegister(prometheus.NewBuildInfoCollector())
-	prometheus.MustRegister(prom.ClickhouseReconnectTotal)
-	prometheus.MustRegister(prom.ClickhouseEventsSuccess)
-	prometheus.MustRegister(prom.ClickhouseEventsErrors)
-	prometheus.MustRegister(prom.ClickhouseEventsTotal)
-	prometheus.MustRegister(prom.KafkaConsumerErrors)
 
 	serviceRegister(consulAgent)
 	defer func() {
@@ -115,7 +134,8 @@ func main() {
 	}()
 
 	app.Run("clickhouse_sinker", func() error {
-		cfg = *creator.InitConfig(*config)
+		config.SetConfigDir(*cfgDir)
+		cfg := config.GetConfig()
 		runner = NewSinker(cfg)
 		return runner.Init()
 	}, func() error {
@@ -138,6 +158,12 @@ func main() {
 			mux.HandleFunc("/ready", health.Health.ReadyEndpoint) // GET /ready?full=1
 			mux.HandleFunc("/live", health.Health.LiveEndpoint)   // GET /live?full=1
 
+			mux.HandleFunc("/debug/pprof/", pprof.Index)
+			mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+			mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+			mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+			mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
 			log.Infof("Run http server http://%s", *httpAddr)
 			log.Error(http.ListenAndServe(*httpAddr, mux))
 		}()
@@ -152,29 +178,32 @@ func main() {
 
 // Sinker object maintains number of task for each partition
 type Sinker struct {
-	pusher  *statistics.Pusher
-	tasks   []*task.Service
-	config  creator.Config
-	stopped chan struct{}
+	pusher *statistics.Pusher
+	tasks  []*task.Service
+	cfg    *config.Config
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // NewSinker get an instance of sinker with the task list
-func NewSinker(config creator.Config) *Sinker {
-	s := &Sinker{config: config, stopped: make(chan struct{})}
+func NewSinker(cfg *config.Config) *Sinker {
+	parent := context.Background()
+	ctx, cancel := context.WithCancel(parent)
+	s := &Sinker{cfg: cfg, ctx: ctx, cancel: cancel}
 	return s
 }
 
 // Init initializes the list of tasks
-func (s *Sinker) Init() error {
-	if s.config.Statistics.Enable {
-		s.pusher = statistics.NewPusher(s.config.Statistics.PushGateWayAddrs,
-			s.config.Statistics.PushInterval)
+func (s *Sinker) Init() (err error) {
+	if s.cfg.Statistics.Enable {
+		s.pusher = statistics.NewPusher(s.cfg.Statistics.PushGateWayAddrs,
+			s.cfg.Statistics.PushInterval)
 		err := s.pusher.Init()
 		if err != nil {
 			return err
 		}
 	}
-	s.tasks = s.config.GenTasks()
+	s.tasks = GenTasks(s.cfg)
 	for _, t := range s.tasks {
 		if err := t.Init(); err != nil {
 			return err
@@ -189,13 +218,14 @@ func (s *Sinker) Run() {
 		go s.pusher.Run()
 	}
 	for i := range s.tasks {
-		go s.tasks[i].Run()
+		go s.tasks[i].Run(s.ctx)
 	}
-	<-s.stopped
+	<-s.ctx.Done()
 }
 
 // Close shutdown tasks
 func (s *Sinker) Close() {
+	s.cancel()
 	for i := range s.tasks {
 		s.tasks[i].Stop()
 	}
@@ -203,5 +233,4 @@ func (s *Sinker) Close() {
 	if s.pusher != nil {
 		s.pusher.Stop()
 	}
-	close(s.stopped)
 }

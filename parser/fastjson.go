@@ -18,28 +18,32 @@ package parser
 import (
 	"time"
 
-	"github.com/valyala/fastjson"
-
 	"github.com/housepower/clickhouse_sinker/model"
+	"github.com/pkg/errors"
+	"github.com/valyala/fastjson"
 )
 
 // FastjsonParser, parser for get data in json format
 // uses
 type FastjsonParser struct {
+	tsLayout []string
 }
 
-func (c *FastjsonParser) Parse(bs []byte) model.Metric {
+func (p *FastjsonParser) Parse(bs []byte) (metric model.Metric, err error) {
 	// todo pool the parser
 	var parser fastjson.Parser
-	value, err := parser.Parse(string(bs))
-	if err == nil {
-		return &FastjsonMetric{value: value}
+	var value *fastjson.Value
+	if value, err = parser.Parse(string(bs)); err != nil {
+		err = errors.Wrapf(err, "")
+		return
 	}
-	return &DummyMetric{}
+	metric = &FastjsonMetric{value: value, tsLayout: p.tsLayout}
+	return
 }
 
 type FastjsonMetric struct {
-	value *fastjson.Value
+	value    *fastjson.Value
+	tsLayout []string
 }
 
 func (c *FastjsonMetric) Get(key string) interface{} {
@@ -60,24 +64,30 @@ func (c *FastjsonMetric) GetInt(key string) int64 {
 }
 
 func (c *FastjsonMetric) GetArray(key string, t string) interface{} {
-	array, _ := c.value.Array()
+	array := c.value.GetArray(key)
+	if array == nil {
+		return nil
+	}
 	switch t {
 	case "float":
 		results := make([]float64, 0, len(array))
-		for i := range array {
-			results = append(results, array[i].GetFloat64())
+		for _, e := range array {
+			v, _ := e.Float64()
+			results = append(results, v)
 		}
 		return results
 	case "int":
 		results := make([]int, 0, len(array))
-		for i := range array {
-			results = append(results, array[i].GetInt())
+		for _, e := range array {
+			v, _ := e.Int()
+			results = append(results, v)
 		}
 		return results
 	case "string":
 		results := make([]string, 0, len(array))
-		for i := range array {
-			results = append(results, string(array[i].GetStringBytes()))
+		for _, e := range array {
+			v, _ := e.StringBytes()
+			results = append(results, string(v))
 		}
 		return results
 	default:
@@ -87,6 +97,32 @@ func (c *FastjsonMetric) GetArray(key string, t string) interface{} {
 
 func (c *FastjsonMetric) String() string {
 	return c.value.String()
+}
+
+func (c *FastjsonMetric) GetDate(key string) (t time.Time) {
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[0], val)
+	return
+}
+
+func (c *FastjsonMetric) GetDateTime(key string) (t time.Time) {
+	if v := c.GetFloat(key); v != 0 {
+		return time.Unix(int64(v), int64(v*1e9)%1e9)
+	}
+
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[1], val)
+	return
+}
+
+func (c *FastjsonMetric) GetDateTime64(key string) (t time.Time) {
+	if v := c.GetFloat(key); v != 0 {
+		return time.Unix(int64(v), int64(v*1e9)%1e9)
+	}
+
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[2], val)
+	return
 }
 
 func (c *FastjsonMetric) GetElasticDateTime(key string) int64 {

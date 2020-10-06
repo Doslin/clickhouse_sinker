@@ -21,35 +21,37 @@ import (
 	"time"
 
 	"github.com/housepower/clickhouse_sinker/model"
-	"github.com/sundy-li/go_commons/log"
+	"github.com/pkg/errors"
 )
 
 // CsvParser implementation to parse input from a CSV format
 type CsvParser struct {
 	title     []string
 	delimiter string
+	tsLayout  []string
 }
 
 // Parse extract comma separated values from the data
-func (c *CsvParser) Parse(bs []byte) model.Metric {
+func (p *CsvParser) Parse(bs []byte) (metric model.Metric, err error) {
 	r := csv.NewReader(bytes.NewReader(bs))
-
 	r.Comma = ','
-	if len(c.delimiter) > 0 {
-		r.Comma = rune(c.delimiter[0])
+	if len(p.delimiter) > 0 {
+		r.Comma = rune(p.delimiter[0])
 	}
-	values, err := r.Read()
-	if err != nil {
-		log.Error("Parse csv error:" + err.Error())
-		return &DummyMetric{}
+	var value []string
+	if value, err = r.Read(); err != nil {
+		err = errors.Wrap(err, "")
+		return
 	}
-	return &CsvMetric{c.title, values}
+	metric = &CsvMetric{p.title, value, p.tsLayout}
+	return
 }
 
 // CsvMetic
 type CsvMetric struct {
-	titles []string
-	values []string
+	titles   []string
+	values   []string
+	tsLayout []string
 }
 
 // Get returns the value corresponding to a column expects called
@@ -98,6 +100,24 @@ func (c *CsvMetric) GetInt(key string) int64 {
 // GetArray is Empty implemented for CsvMetric
 func (c *CsvMetric) GetArray(key string, t string) interface{} {
 	return []interface{}{}
+}
+
+func (c *CsvMetric) GetDate(key string) (t time.Time) {
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[0], val)
+	return
+}
+
+func (c *CsvMetric) GetDateTime(key string) (t time.Time) {
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[1], val)
+	return
+}
+
+func (c *CsvMetric) GetDateTime64(key string) (t time.Time) {
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[2], val)
+	return
 }
 
 func (c *CsvMetric) GetElasticDateTime(key string) int64 {

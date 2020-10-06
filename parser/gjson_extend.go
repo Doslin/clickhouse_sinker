@@ -24,10 +24,12 @@ import (
 )
 
 type GjsonExtendParser struct {
+	tsLayout []string
 }
 
 type GjsonExtendMetric struct {
-	mp map[string]interface{}
+	mp       map[string]interface{}
+	tsLayout []string
 }
 
 // {
@@ -45,8 +47,9 @@ type GjsonExtendMetric struct {
 // 	"bb_cc" : 3,
 // 	"bb_dd" : ["33", "44"]
 // }
-func (c *GjsonExtendParser) Parse(bs []byte) model.Metric {
+func (p *GjsonExtendParser) Parse(bs []byte) (metric model.Metric, err error) {
 	var mp = make(map[string]interface{})
+
 	jsonResults := gjson.ParseBytes(bs)
 	jsonResults.ForEach(func(key gjson.Result, value gjson.Result) bool {
 		if key.String() != "" {
@@ -59,7 +62,8 @@ func (c *GjsonExtendParser) Parse(bs []byte) model.Metric {
 		return true
 	})
 
-	return &GjsonExtendMetric{mp}
+	metric = &GjsonExtendMetric{mp, p.tsLayout}
+	return
 }
 
 func injectObject(prefix string, result map[string]interface{}, t gjson.Result) {
@@ -166,6 +170,32 @@ func (c *GjsonExtendMetric) GetInt(key string) int64 {
 	default:
 		return 0
 	}
+}
+
+func (c *GjsonExtendMetric) GetDate(key string) (t time.Time) {
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[0], val)
+	return
+}
+
+func (c *GjsonExtendMetric) GetDateTime(key string) (t time.Time) {
+	if v := c.GetFloat(key); v != 0 {
+		return time.Unix(int64(v), int64(v*1e9)%1e9)
+	}
+
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[1], val)
+	return
+}
+
+func (c *GjsonExtendMetric) GetDateTime64(key string) (t time.Time) {
+	if v := c.GetFloat(key); v != 0 {
+		return time.Unix(int64(v), int64(v*1e9)%1e9)
+	}
+
+	val := c.GetString(key)
+	t, _ = time.Parse(c.tsLayout[2], val)
+	return
 }
 
 func (c *GjsonExtendMetric) GetElasticDateTime(key string) int64 {

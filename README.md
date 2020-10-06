@@ -11,6 +11,7 @@ clickhouse_sinker is a sinker program that transfer kafka message into [ClickHou
 * Support multiple sinker tasks, each runs on parallel.
 * Support multiply kafka and ClickHouse clusters.
 * Bulk insert (by config `bufferSize` and `flushInterval`).
+* Parse messages concurrently (by config `concurrentParsers`).
 * Loop write (when some node crashes, it will retry write the data to the other healthy node)
 * Uses Native ClickHouse client-server TCP protocol, with higher performance than HTTP.
 
@@ -53,12 +54,11 @@ make build
 * [x] Float32, Float64
 * [x] String
 * [x] FixedString
-* [x] DateTime(UInt32), Date(UInt16)
+* [x] Date, DateTime, DateTime64 (Custom Layout parser)
 * [x] Array(UInt8, UInt16, UInt32, UInt64, Int8, Int16, Int32, Int64)
 * [x] Array(Float32, Float64)
 * [x] Array(String)
 * [x] Array(FixedString)
-* [x] Array(DateTime(UInt32), Date(UInt16))
 * [x] Nullable
 * [x] [ElasticDateTime](https://www.elastic.co/guide/en/elasticsearch/reference/current/date.html) => Int64 (2019-12-16T12:10:30Z => 1576498230)
 
@@ -82,7 +82,7 @@ See [json parser](./parser/json.go)
 ```bash
 echo '{"date": "2019-07-11T12:10:30Z", "level": "info", "message": "msg4"}' | kafkacat -b 127.0.0.1:9093 -P -t logstash
 
-clickhouse-client -q 'select * from default.logstash' 
+clickhouse-client -q 'select * from default.logstash'
 2019-12-16	info	msg4
 2019-07-11	info	msg4
 2015-05-11	info	msg4

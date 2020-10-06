@@ -15,6 +15,10 @@ limitations under the License.
 
 package model
 
+import (
+	"time"
+)
+
 // Metric interface for metric collection
 type Metric interface {
 	Get(key string) interface{}
@@ -22,6 +26,9 @@ type Metric interface {
 	GetArray(key string, t string) interface{}
 	GetFloat(key string) float64
 	GetInt(key string) int64
+	GetDate(key string) time.Time
+	GetDateTime(key string) time.Time
+	GetDateTime64(key string) time.Time
 	GetElasticDateTime(key string) int64
 }
 
@@ -36,4 +43,12 @@ type ColumnWithType struct {
 	Name       string
 	Type       string
 	SourceName string
+}
+
+func MetricToRow(metric Metric, dims []*ColumnWithType) (row []interface{}) {
+	row = make([]interface{}, len(dims))
+	for i, dim := range dims {
+		row[i] = GetValueByType(metric, dim)
+	}
+	return
 }
